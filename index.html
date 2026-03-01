@@ -159,7 +159,6 @@
 
     /* Buttons & Lists */
     #saveCombinationBtn, .save-data-btn, #confirmBtn, #cancelBtn, .open-btn, .delete-btn { border: none; border-radius: 8px; padding: 10px 18px; font-size: 1em; cursor: pointer; transition: 0.2s; color: var(--btn-text); background-color: var(--accent); }
-    #saveCombinationBtn { margin-top: 15px; }
     #saveCombinationBtn:hover { background-color: var(--text); color: var(--bg); }
     #confirmBtn, .delete-btn { background-color: var(--delete-red); color: white; }
     
@@ -177,6 +176,65 @@
     .message.success { background-color: #28a745; }
     .message.error { background-color: var(--delete-red); }
     .confirmation-actions { margin-top: 20px; display: flex; justify-content: center; gap: 20px; }
+
+    /* Strikethrough mode button */
+    #strikethroughBtn {
+      border: none; border-radius: 8px; padding: 10px 18px; font-size: 1em; cursor: pointer;
+      transition: 0.2s; color: var(--btn-text); background-color: var(--accent);
+    }
+    #strikethroughBtn.active { background-color: #e63946 !important; color: white !important; }
+    #strikethroughBtn:hover { background-color: var(--text); color: var(--bg); }
+    #strikethroughBtn.active:hover { background-color: #c0303a !important; color: white !important; }
+
+    /* Rendered word area for strikethrough mode */
+    #wordRenderArea {
+      flex-basis: calc(50% - 10px);
+      padding: 12px;
+      font-size: 1em;
+      border: 1px solid var(--input-bg);
+      border-radius: 8px;
+      background: var(--input-bg);
+      color: var(--text);
+      min-height: 50px;
+      word-wrap: break-word;
+      font-family: 'Didact Gothic', sans-serif;
+      display: none;
+      cursor: default;
+    }
+    #wordRenderArea > div {
+      min-height: 1.5em;
+    }
+    body.layout-original #wordRenderArea { width: 100%; flex-basis: auto; }
+
+    .word-token {
+      display: inline;
+      cursor: pointer;
+      border-radius: 3px;
+      padding: 1px 2px;
+    }
+    .word-sep {
+      display: inline;
+      white-space: pre;
+    }
+    .word-token.struck {
+      text-decoration: line-through;
+      background-color: rgba(230, 57, 70, 0.18);
+      color: inherit;
+    }
+    .word-token:hover {
+      background-color: rgba(230, 57, 70, 0.1);
+    }
+    .word-token.struck:hover {
+      background-color: rgba(230, 57, 70, 0.28);
+    }
+
+    /* Undo button in modals */
+    .undo-btn {
+      position: absolute; top: 10px; left: 15px;
+      background: none; border: none; font-size: 1.2em;
+      color: var(--text); cursor: pointer;
+    }
+    .undo-btn:hover { color: var(--accent); }
   </style>
 </head>
 <body class="light">
@@ -192,11 +250,15 @@
       <div class="content-area">
         <input type="text" id="wordInputText" placeholder="Type words here..." oninput="handleWordInput()" />
         <textarea id="wordInputTextarea" placeholder="Type words here..." oninput="handleWordInput()"></textarea>
+        <div id="wordRenderArea"></div>
         <div id="result" class="result-box"></div>
       </div>
       <input type="text" id="mainTestWordInput" placeholder="Enter test word here..." class="test-word-input main-page-input">
     </div>
-    <button id="saveCombinationBtn">Save Combination</button>
+    <div style="display:flex; gap:8px; align-items:center; margin-top:15px;">
+      <button id="saveCombinationBtn" style="margin-top:0;">Save Combination</button>
+      <button id="strikethroughBtn" title="Strikethrough mode">❌</button>
+    </div>
   </div>
 
   <div class="modal" id="settingsModal">
@@ -262,6 +324,7 @@
   <div class="modal" id="saveCombinationModal">
     <div class="modal-content">
         <button class="close-btn" onclick="closeSaveModal()">✕</button>
+        <button class="undo-btn" onclick="undoGridInput('saveCombinationModal')" title="Undo">↩</button>
         <input type="hidden" id="combinationId">
         <h3>Save Wordle Combination</h3>
         
@@ -288,6 +351,7 @@
   <div class="modal" id="searchModal">
       <div class="modal-content">
           <button class="close-btn" onclick="closeModal('searchModal')">✕</button>
+          <button class="undo-btn" onclick="undoGridInput('searchModal')" title="Undo">↩</button>
           <h3>Search Combinations</h3>
           
           <div class="palette">
@@ -328,6 +392,9 @@
     let selectedColor = 'grey';
     let confirmCallback = null;
     let inputDebounceTimer;
+    let strikethroughMode = false;
+    let struckWords = new Set(); // keys: "lineIndex:wordIndex"
+    let gridUndoStacks = { saveCombinationModal: [], searchModal: [] };
 
     /* =========================================
        INITIALIZATION
@@ -343,6 +410,12 @@
         
         setTheme(savedTheme, false); // false = don't close modal on init
         applyLayout(savedLayout);
+        
+        // Show "No letters found." immediately
+        document.getElementById('result').textContent = 'No letters found.';
+        
+        // Strikethrough button
+        document.getElementById('strikethroughBtn').addEventListener('click', toggleStrikethroughMode);
     }
 
     function attachEventListeners() {
@@ -381,7 +454,7 @@
             grid.addEventListener('click', colorWordleBox);
             grid.addEventListener('keydown', handleWordleBoxKeyDown);
             grid.addEventListener('beforeinput', onBoxBeforeInput);
-            grid.addEventListener('input', onBoxInput);
+            grid.addEventListener('input', onBoxInputWithUndo);
         });
     }
 
@@ -391,17 +464,32 @@
     function handleWordInput() {
         if (!activeInputElement) return;
         if (activeInputElement.id === 'wordInputTextarea') updateTextareaHeight(activeInputElement);
+        if (strikethroughMode) renderStrikethroughArea();
         countLetters();
     }
 
     function countLetters() {
         if (!activeInputElement) return;
-        const text = activeInputElement.value.toLowerCase();
-        // Regex adjusted to match words that are NOT followed by an asterisk
-        const words = text.match(/\b\w+\b(?!\*)/g) || [];
-        const letterMap = {};
+        const text = activeInputElement.value;
+        const lines = text.split('\n');
+        let allWords = [];
         
-        for (const word of words) {
+        lines.forEach((line, lineIdx) => {
+            // Find words in the line with their positions
+            const regex = /\b\w+\b(?!\*)/g;
+            let match;
+            let wordIdx = 0;
+            while ((match = regex.exec(line)) !== null) {
+                const key = `${lineIdx}:${wordIdx}`;
+                if (!struckWords.has(key)) {
+                    allWords.push(match[0].toLowerCase());
+                }
+                wordIdx++;
+            }
+        });
+        
+        const letterMap = {};
+        for (const word of allWords) {
             const unique = new Set(word.replace(/[^a-z]/g, ''));
             for (const letter of unique) {
                 letterMap[letter] = (letterMap[letter] || 0) + 1;
@@ -411,6 +499,79 @@
         const sorted = Object.entries(letterMap).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
         const output = sorted.map(([l, c]) => `${l}: ${c}`).join('\n');
         document.getElementById('result').textContent = output || 'No letters found.';
+    }
+
+    /* =========================================
+       STRIKETHROUGH MODE
+       ========================================= */
+    function toggleStrikethroughMode() {
+        strikethroughMode = !strikethroughMode;
+        const btn = document.getElementById('strikethroughBtn');
+        if (strikethroughMode) {
+            btn.classList.add('active');
+            renderStrikethroughArea();
+        } else {
+            btn.classList.remove('active');
+        }
+        updateRenderAreaVisibility();
+    }
+
+    // renderArea shows only in strikethrough mode. Edit mode always uses the textarea directly.
+    function updateRenderAreaVisibility() {
+        const textarea = document.getElementById('wordInputTextarea');
+        const textInput = document.getElementById('wordInputText');
+        const renderArea = document.getElementById('wordRenderArea');
+        const isOriginal = document.body.classList.contains('layout-original');
+
+        renderArea.style.display = strikethroughMode ? 'block' : 'none';
+        if (!isOriginal) {
+            textarea.style.display = strikethroughMode ? 'none' : 'block';
+            if (!strikethroughMode) updateTextareaHeight(textarea);
+        } else {
+            textInput.style.display = strikethroughMode ? 'none' : 'block';
+        }
+    }
+
+    function renderStrikethroughArea() {
+        const renderArea = document.getElementById('wordRenderArea');
+        if (!activeInputElement) return;
+        const text = activeInputElement.value;
+        const lines = text.split('\n');
+
+        renderArea.innerHTML = '';
+
+        lines.forEach((line, lineIdx) => {
+            const lineDiv = document.createElement('div');
+
+            const regex = /(\b\w+\b)|([^\w]+)/g;
+            let wordIdx = 0;
+            let match;
+            while ((match = regex.exec(line)) !== null) {
+                if (match[1] !== undefined) {
+                    const span = document.createElement('span');
+                    span.className = 'word-token';
+                    span.textContent = match[1];
+                    const key = `${lineIdx}:${wordIdx}`;
+                    if (struckWords.has(key)) span.classList.add('struck');
+                    span.addEventListener('click', () => {
+                        if (struckWords.has(key)) struckWords.delete(key);
+                        else struckWords.add(key);
+                        renderStrikethroughArea();
+                        countLetters();
+                    });
+                    lineDiv.appendChild(span);
+                    wordIdx++;
+                } else {
+                    // Separator: render spaces visually but collapse runs into single gap
+                    const sep = document.createElement('span');
+                    sep.className = 'word-sep';
+                    sep.textContent = match[2];
+                    lineDiv.appendChild(sep);
+                }
+            }
+
+            renderArea.appendChild(lineDiv);
+        });
     }
 
     function updateTextareaHeight(el) {
@@ -452,12 +613,21 @@
     function applyLayout(layout) {
         const textInput = document.getElementById('wordInputText');
         const areaInput = document.getElementById('wordInputTextarea');
+        const renderArea = document.getElementById('wordRenderArea');
         const isOriginal = layout === 'original';
 
         document.body.classList.toggle('layout-original', isOriginal);
-        textInput.style.display = isOriginal ? 'block' : 'none';
-        areaInput.style.display = isOriginal ? 'none' : 'block';
-        activeInputElement = isOriginal ? textInput : areaInput;
+
+        renderArea.style.display = strikethroughMode ? 'block' : 'none';
+        if (isOriginal) {
+            textInput.style.display = strikethroughMode ? 'none' : 'block';
+            areaInput.style.display = 'none';
+            activeInputElement = textInput;
+        } else {
+            areaInput.style.display = strikethroughMode ? 'none' : 'block';
+            textInput.style.display = 'none';
+            activeInputElement = areaInput;
+        }
 
         document.querySelectorAll('.layout-option').forEach(btn => btn.classList.remove('active-layout'));
         document.getElementById(`layout-${layout}`)?.classList.add('active-layout');
@@ -492,23 +662,37 @@
 
     function colorWordleBox(e) {
         if (!e.target.classList.contains('wordle-box')) return;
-        e.target.dataset.color = selectedColor;
+        const box = e.target;
+        const modal = box.closest('.modal');
+        const modalId = modal ? modal.id : null;
+        // Only push undo state if the color is actually changing
+        if (modalId && gridUndoStacks[modalId] !== undefined && box.dataset.color !== selectedColor) {
+            pushUndoState(modalId);
+        }
+        box.dataset.color = selectedColor;
     }
 
     // Input Handling for Grid
     function onBoxBeforeInput(e) {
+        const box = e.target;
+        const modal = box.closest('.modal');
+        const modalId = modal ? modal.id : null;
+
         if (e.inputType === 'deleteContentBackward') {
             e.preventDefault();
-            const box = e.target;
+            if (modalId && gridUndoStacks[modalId] !== undefined) pushUndoState(modalId);
             if (box.value) box.value = '';
             else if (box.previousElementSibling) {
                 box.previousElementSibling.value = '';
                 box.previousElementSibling.focus();
             }
+        } else {
+            // Letter/number input — push BEFORE browser updates value
+            if (modalId && gridUndoStacks[modalId] !== undefined) pushUndoState(modalId);
         }
     }
 
-    function onBoxInput(e) {
+    function onBoxInputWithUndo(e) {
         const box = e.target;
         const val = box.value.slice(-1);
         if (/^[a-zA-Z0-9]$/.test(val)) {
@@ -517,6 +701,25 @@
         } else {
             box.value = '';
         }
+    }
+
+    function pushUndoState(modalId) {
+        const boxes = document.querySelectorAll(`#${modalId} .wordle-box`);
+        const state = Array.from(boxes).map(b => ({ value: b.value, color: b.dataset.color || 'grey' }));
+        if (!gridUndoStacks[modalId]) gridUndoStacks[modalId] = [];
+        gridUndoStacks[modalId].push(state);
+        // Limit stack size
+        if (gridUndoStacks[modalId].length > 50) gridUndoStacks[modalId].shift();
+    }
+
+    function undoGridInput(modalId) {
+        if (!gridUndoStacks[modalId] || gridUndoStacks[modalId].length === 0) return;
+        const state = gridUndoStacks[modalId].pop();
+        const boxes = document.querySelectorAll(`#${modalId} .wordle-box`);
+        boxes.forEach((box, i) => {
+            box.value = state[i].value;
+            box.dataset.color = state[i].color;
+        });
     }
 
     function handleWordleBoxKeyDown(e) {
@@ -534,6 +737,7 @@
         const currentCombo = combos.find(c => c.id.toString() === loadedId);
 
         resetGrid('#saveCombinationModal');
+        gridUndoStacks['saveCombinationModal'] = [];
         
         if (currentCombo) populateGrid('#saveCombinationModal', currentCombo);
         
@@ -591,6 +795,7 @@
        ========================================= */
     function openSearchModal() {
         resetGrid('#searchModal');
+        gridUndoStacks['searchModal'] = [];
         document.getElementById('searchModal').style.display = 'flex';
     }
 
