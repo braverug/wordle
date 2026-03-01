@@ -393,7 +393,7 @@
     let confirmCallback = null;
     let inputDebounceTimer;
     let strikethroughMode = false;
-    let struckWords = new Set(); // keys: "lineIndex:wordIndex"
+    let struckWords = new Set(); // keys: "globalWordIndex"
     let gridUndoStacks = { saveCombinationModal: [], searchModal: [] };
 
     /* =========================================
@@ -474,17 +474,20 @@
         const lines = text.split('\n');
         let allWords = [];
         
-        lines.forEach((line, lineIdx) => {
-            // Find words in the line with their positions
-            const regex = /\b\w+\b(?!\*)/g;
+        let globalWordIdx = 0;
+        lines.forEach((line) => {
+            // Find words in the line, match all to keep globalWordIdx in sync
+            const regex = /\b\w+\b/g;
             let match;
-            let wordIdx = 0;
             while ((match = regex.exec(line)) !== null) {
-                const key = `${lineIdx}:${wordIdx}`;
-                if (!struckWords.has(key)) {
-                    allWords.push(match[0].toLowerCase());
+                const key = `${globalWordIdx}`;
+                const nextChar = line[match.index + match[0].length];
+                if (nextChar !== '*') {
+                    if (!struckWords.has(key)) {
+                        allWords.push(match[0].toLowerCase());
+                    }
                 }
-                wordIdx++;
+                globalWordIdx++;
             }
         });
         
@@ -540,18 +543,18 @@
 
         renderArea.innerHTML = '';
 
-        lines.forEach((line, lineIdx) => {
+        let globalWordIdx = 0;
+        lines.forEach((line) => {
             const lineDiv = document.createElement('div');
 
             const regex = /(\b\w+\b)|([^\w]+)/g;
-            let wordIdx = 0;
             let match;
             while ((match = regex.exec(line)) !== null) {
                 if (match[1] !== undefined) {
                     const span = document.createElement('span');
                     span.className = 'word-token';
                     span.textContent = match[1];
-                    const key = `${lineIdx}:${wordIdx}`;
+                    const key = `${globalWordIdx}`;
                     if (struckWords.has(key)) span.classList.add('struck');
                     span.addEventListener('click', () => {
                         if (struckWords.has(key)) struckWords.delete(key);
@@ -560,7 +563,7 @@
                         countLetters();
                     });
                     lineDiv.appendChild(span);
-                    wordIdx++;
+                    globalWordIdx++;
                 } else {
                     // Separator: render spaces visually but collapse runs into single gap
                     const sep = document.createElement('span');
