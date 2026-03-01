@@ -394,6 +394,7 @@
     let inputDebounceTimer;
     let strikethroughMode = false;
     let struckWords = new Set(); // keys: "lineIndex:wordIndex"
+    let previousLines = [];     // snapshot of lines from last handleWordInput call
     let gridUndoStacks = { saveCombinationModal: [], searchModal: [] };
 
     /* =========================================
@@ -464,8 +465,94 @@
     function handleWordInput() {
         if (!activeInputElement) return;
         if (activeInputElement.id === 'wordInputTextarea') updateTextareaHeight(activeInputElement);
+        const currentLines = activeInputElement.value.split('\n');
+        syncStruckWordsToTextChange(previousLines, currentLines);
+        previousLines = currentLines;
         if (strikethroughMode) renderStrikethroughArea();
         countLetters();
+    }
+
+    /* =========================================
+       STRUCK WORDS LINE/WORD REMAPPING
+       ========================================= */
+    function syncStruckWordsToTextChange(oldLines, newLines) {
+        if (struckWords.size === 0) return;
+
+        // Find first line that differs (from top)
+        let top = 0;
+        while (top < oldLines.length && top < newLines.length && oldLines[top] === newLines[top]) {
+            top++;
+        }
+        // All lines identical — nothing to remap
+        if (top === oldLines.length && top === newLines.length) return;
+
+        // Find last line that differs (from bottom), staying above top
+        let oldBot = oldLines.length - 1;
+        let newBot = newLines.length - 1;
+        while (oldBot > top && newBot > top && oldLines[oldBot] === newLines[newBot]) {
+            oldBot--;
+            newBot--;
+        }
+
+        const lineDelta = newLines.length - oldLines.length;
+
+        // Flatten words in the OLD changed region [top..oldBot]
+        const oldRegionWords = [];
+        for (let l = top; l <= oldBot; l++) {
+            const regex = /\b\w+\b/g;
+            let match, wi = 0;
+            while ((match = regex.exec(oldLines[l])) !== null) {
+                oldRegionWords.push({ lineIdx: l, wordIdx: wi, word: match[0].toLowerCase() });
+                wi++;
+            }
+        }
+
+        // Flatten words in the NEW changed region [top..newBot]
+        const newRegionWords = [];
+        for (let l = top; l <= newBot; l++) {
+            const regex = /\b\w+\b/g;
+            let match, wi = 0;
+            while ((match = regex.exec(newLines[l])) !== null) {
+                newRegionWords.push({ lineIdx: l, wordIdx: wi, word: match[0].toLowerCase() });
+                wi++;
+            }
+        }
+
+        // Greedily align old→new word sequences to build a position mapping.
+        // This correctly handles line splits, merges, and word insertions/deletions.
+        const regionMapping = new Map(); // "oldLine:oldWord" → "newLine:newWord"
+        let ni = 0;
+        for (let oi = 0; oi < oldRegionWords.length; oi++) {
+            const ow = oldRegionWords[oi];
+            while (ni < newRegionWords.length && newRegionWords[ni].word !== ow.word) ni++;
+            if (ni < newRegionWords.length) {
+                const nw = newRegionWords[ni];
+                regionMapping.set(`${ow.lineIdx}:${ow.wordIdx}`, `${nw.lineIdx}:${nw.wordIdx}`);
+                ni++;
+            }
+            // If no match: word was deleted → struck state is dropped
+        }
+
+        // Rebuild struckWords with remapped keys
+        const newStruckWords = new Set();
+        for (const key of struckWords) {
+            const colonIdx = key.indexOf(':');
+            const lineIdx = parseInt(key.substring(0, colonIdx));
+            const wordIdx = parseInt(key.substring(colonIdx + 1));
+
+            if (lineIdx < top) {
+                // Before the changed region — untouched
+                newStruckWords.add(key);
+            } else if (lineIdx > oldBot) {
+                // After the changed region — shift by line delta
+                newStruckWords.add(`${lineIdx + lineDelta}:${wordIdx}`);
+            } else {
+                // Inside the changed region — use the word-level mapping
+                const mapped = regionMapping.get(key);
+                if (mapped) newStruckWords.add(mapped);
+            }
+        }
+        struckWords = newStruckWords;
     }
 
     function countLetters() {
@@ -829,6 +916,8 @@
         document.getElementById('mainTestWordInput').value = combo.testWord;
         document.getElementById('loadedCombinationId').value = combo.id;
         
+        // Reset previousLines so the line-remapping diff starts fresh from loaded content
+        previousLines = (combo.originalWords || '').split('\n');
         handleWordInput(); // Refresh UI
         closeModal('searchModal');
         showMessage('Loaded successfully!');
