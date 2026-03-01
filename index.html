@@ -210,7 +210,8 @@
       display: inline;
       cursor: pointer;
       border-radius: 3px;
-      padding: 1px 2px;
+      padding: 1px 4px;
+      margin: 0 2px;
     }
     .word-sep {
       display: inline;
@@ -395,6 +396,7 @@
     let strikethroughMode = false;
     let struckWords = new Set(); // keys: "lineIndex:wordIndex"
     let gridUndoStacks = { saveCombinationModal: [], searchModal: [] };
+    let pendingGridUndo = null;
 
     /* =========================================
        INITIALIZATION
@@ -422,6 +424,8 @@
         // Debounce main input
         const handleInput = () => {
             clearTimeout(inputDebounceTimer);
+            // Clear strike indices when text changes — new word positions won't match old strikes
+            struckWords.clear();
             inputDebounceTimer = setTimeout(handleWordInput, 300); // 300ms delay
         };
         document.getElementById('wordInputText').addEventListener('input', handleInput);
@@ -463,7 +467,10 @@
        ========================================= */
     function handleWordInput() {
         if (!activeInputElement) return;
-        if (activeInputElement.id === 'wordInputTextarea') updateTextareaHeight(activeInputElement);
+        // Only resize textarea when it's actually visible (not hidden behind renderArea)
+        if (activeInputElement.id === 'wordInputTextarea' && !strikethroughMode) {
+            updateTextareaHeight(activeInputElement);
+        }
         if (strikethroughMode) renderStrikethroughArea();
         countLetters();
     }
@@ -480,7 +487,7 @@
             let match;
             let wordIdx = 0;
             while ((match = regex.exec(line)) !== null) {
-                const key = `${lineIdx}:${wordIdx}`;
+                const key = `${line}:${wordIdx}`;
                 if (!struckWords.has(key)) {
                     allWords.push(match[0].toLowerCase());
                 }
@@ -551,7 +558,7 @@
                     const span = document.createElement('span');
                     span.className = 'word-token';
                     span.textContent = match[1];
-                    const key = `${lineIdx}:${wordIdx}`;
+                    const key = `${line}:${wordIdx}`;
                     if (struckWords.has(key)) span.classList.add('struck');
                     span.addEventListener('click', () => {
                         if (struckWords.has(key)) struckWords.delete(key);
@@ -680,15 +687,20 @@
 
         if (e.inputType === 'deleteContentBackward') {
             e.preventDefault();
+            pendingGridUndo = null;
             if (modalId && gridUndoStacks[modalId] !== undefined) pushUndoState(modalId);
             if (box.value) box.value = '';
             else if (box.previousElementSibling) {
                 box.previousElementSibling.value = '';
                 box.previousElementSibling.focus();
             }
-        } else {
-            // Letter/number input — push BEFORE browser updates value
-            if (modalId && gridUndoStacks[modalId] !== undefined) pushUndoState(modalId);
+        } else if (modalId && gridUndoStacks[modalId] !== undefined) {
+            // Capture pre-change state but don't push yet — commit only if a valid char lands
+            const boxes = document.querySelectorAll(`#${modalId} .wordle-box`);
+            pendingGridUndo = {
+                modalId,
+                state: Array.from(boxes).map(b => ({ value: b.value, color: b.dataset.color || 'grey' }))
+            };
         }
     }
 
@@ -696,9 +708,19 @@
         const box = e.target;
         const val = box.value.slice(-1);
         if (/^[a-zA-Z0-9]$/.test(val)) {
+            // Valid char accepted — now commit the pending pre-change state
+            if (pendingGridUndo) {
+                const stack = gridUndoStacks[pendingGridUndo.modalId];
+                if (stack !== undefined) {
+                    stack.push(pendingGridUndo.state);
+                    if (stack.length > 50) stack.shift();
+                }
+                pendingGridUndo = null;
+            }
             box.value = val.toUpperCase();
             if (box.nextElementSibling) box.nextElementSibling.focus();
         } else {
+            pendingGridUndo = null;
             box.value = '';
         }
     }
@@ -738,6 +760,7 @@
 
         resetGrid('#saveCombinationModal');
         gridUndoStacks['saveCombinationModal'] = [];
+        pendingGridUndo = null;
         
         if (currentCombo) populateGrid('#saveCombinationModal', currentCombo);
         
@@ -796,6 +819,7 @@
     function openSearchModal() {
         resetGrid('#searchModal');
         gridUndoStacks['searchModal'] = [];
+        pendingGridUndo = null;
         document.getElementById('searchModal').style.display = 'flex';
     }
 
