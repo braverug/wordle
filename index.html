@@ -185,7 +185,15 @@
     #strikethroughBtn.active { background-color: #e63946 !important; color: white !important; }
     #strikethroughBtn:hover { background-color: var(--text); color: var(--bg); }
     #strikethroughBtn.active:hover { background-color: #c0303a !important; color: white !important; }
-
+    
+    #saveCombinationBtn, #strikethroughBtn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      line-height: 1.2;
+    }
+    
     /* Rendered word area for strikethrough mode */
     #wordRenderArea {
       flex-basis: calc(50% - 10px);
